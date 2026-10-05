@@ -309,6 +309,15 @@ void callback_function(char* message, size_t len) {
   }
 }
 
+// subscribe() takes one reference for all events of a call, so a replaced
+// reference may still be in use by another (item, event) pair.
+static void callback_ref_release_if_unused(int callback_ref) {
+  for (uint32_t i = 0; i < g_callbacks.num_callbacks; i++) {
+    if (g_callbacks.callbacks[i]->callback_ref == callback_ref) return;
+  }
+  luaL_unref(g_state, LUA_REGISTRYINDEX, callback_ref);
+}
+
 void subscribe_register_event(const char* name, const char* event, int callback_ref) {
   struct stack* stack = stack_create();
   char mach_helper[strlen(g_bootstrap_name) + 16];
@@ -347,7 +356,9 @@ void subscribe_register_event(const char* name, const char* event, int callback_
     callback->callback_ref = callback_ref;
     g_callbacks.callbacks[g_callbacks.num_callbacks - 1] = callback;
   } else {
+    int replaced_ref = g_callbacks.callbacks[index]->callback_ref;
     g_callbacks.callbacks[index]->callback_ref = callback_ref;
+    callback_ref_release_if_unused(replaced_ref);
   }
 
   stack = stack_create();
