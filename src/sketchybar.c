@@ -234,6 +234,16 @@ int bar(lua_State* state) {
   return 0;
 }
 
+// Prints the error left by a failed lua_pcall() in a run-loop callback and
+// removes it. These callbacks run on the main thread's base stack, which is
+// never unwound, so an error object left there would stay for good.
+static void report_callback_error(int error) {
+  if (!error) return;
+  const char* message = lua_tostring(g_state, -1);
+  printf("[!] Lua: %s\n", message ? message : "(error object is not a string)");
+  lua_pop(g_state, 1);
+}
+
 void callback_function(char* message, size_t len) {
   if (len >= 1 + sizeof(int) && message && *message == '\x08') {
     // An exec() child exited without a result: release its callback.
@@ -257,9 +267,7 @@ void callback_function(char* message, size_t len) {
     transaction_create(g_state);
     int error = lua_pcall(g_state, 2, 0, 0);
 
-    if (error && lua_gettop(g_state)) {
-      printf("[!] Lua: %s\n", lua_tostring(g_state, -1));
-    }
+    report_callback_error(error);
     transaction_commit(g_state);
     // The child sends exactly one result per callback, so the reference
     // taken in exec() can be released now.
@@ -294,9 +302,7 @@ void callback_function(char* message, size_t len) {
       transaction_create(g_state);
       int error = lua_pcall(g_state, 1, 0, 0);
 
-      if (error && lua_gettop(g_state)) {
-        printf("[!] Lua: %s\n", lua_tostring(g_state, -1));
-      }
+      report_callback_error(error);
       transaction_commit(g_state);
       break;
     }
@@ -811,9 +817,7 @@ void delay_callback(CFRunLoopTimerRef timer, void* context) {
   transaction_create(g_state);
   int error = lua_pcall(g_state, 0, 0, 0);
 
-  if (error && lua_gettop(g_state)) {
-    printf("[!] Lua: %s\n", lua_tostring(g_state, -1));
-  }
+  report_callback_error(error);
 
   transaction_commit(g_state);
   // The timer does not repeat, so the reference taken in delay() is done.
