@@ -254,6 +254,9 @@ void callback_function(char* message, size_t len) {
       printf("[!] Lua: %s\n", lua_tostring(g_state, -1));
     }
     transaction_commit(g_state);
+    // The child sends exactly one result per callback, so the reference
+    // taken in exec() can be released now.
+    luaL_unref(g_state, LUA_REGISTRYINDEX, callback_ref);
     return;
   }
   env env = message;
@@ -779,6 +782,8 @@ void delay_callback(CFRunLoopTimerRef timer, void* context) {
   }
 
   transaction_commit(g_state);
+  // The timer does not repeat, so the reference taken in delay() is done.
+  luaL_unref(g_state, LUA_REGISTRYINDEX, callback_ref);
 }
 
 int delay(lua_State* state) {
