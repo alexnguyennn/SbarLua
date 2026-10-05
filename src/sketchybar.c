@@ -83,6 +83,8 @@ static char* sketchybar(struct stack* stack) {
   char message_format[message_length + 1];
   memcpy(message_format, message, message_length);
   message_format[message_length] = '\0';
+  // Outside a transaction the flattened stack was allocated here.
+  if (message != g_cmd) free(message);
   char* response = mach_send_message(g_port,
                                      message_format,
                                      message_length + 1,
