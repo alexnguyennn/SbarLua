@@ -235,6 +235,13 @@ int bar(lua_State* state) {
 }
 
 void callback_function(char* message, size_t len) {
+  if (len >= 1 + sizeof(int) && message && *message == '\x08') {
+    // An exec() child exited without a result: release its callback.
+    int callback_ref = 0;
+    memcpy(&callback_ref, message + 1, sizeof(int));
+    luaL_unref(g_state, LUA_REGISTRYINDEX, callback_ref);
+    return;
+  }
   if (len >= 1 + 2*sizeof(int) && message && *message == '\x07') {
     int callback_ref = 0;
     memcpy(&callback_ref, message + 1, sizeof(int));
@@ -718,6 +725,21 @@ int set_bar_name(lua_State* state) {
   return 0;
 }
 
+static mach_port_t g_exec_reply_port = 0;
+static int g_exec_callback_ref = 0;
+
+// Runs in an exec() child that will not deliver a result, either because
+// the 60 s alarm fired or because popen() failed: ask the parent to release
+// the callback reference, then exit. Only async-signal-safe work happens
+// here; the reply port was looked up before the alarm was armed.
+static void exec_child_release(int sig) {
+  char message[1 + sizeof(int)];
+  message[0] = '\x08';
+  memcpy(message + 1, &g_exec_callback_ref, sizeof(int));
+  mach_send_message(g_exec_reply_port, message, sizeof(message), false);
+  _exit(sig ? 128 + sig : 127);
+}
+
 int exec(lua_State* state) {
   if (lua_gettop(state) < 1
       || lua_type(state, 1) != LUA_TSTRING) {
@@ -735,14 +757,24 @@ int exec(lua_State* state) {
   const char* command = lua_tostring(state, 1);
 
   int pid = fork();
+  if (pid < 0) {
+    if (callback_ref) luaL_unref(state, LUA_REGISTRYINDEX, callback_ref);
+    return 0;
+  }
   if (pid != 0) return 0;
 
+  if (callback_ref) {
+    g_exec_reply_port = mach_get_bs_port(g_bootstrap_name);
+    g_exec_callback_ref = callback_ref;
+    signal(SIGALRM, exec_child_release);
+  }
   alarm(60);
   if (!callback_ref) {
     char *exec[] = { "/usr/bin/env", "sh", "-c", (char*)command, NULL };
     exit(execvp(exec[0], exec));
   } else {
     FILE* file = popen(command, "r");
+    if (!file) exec_child_release(0);
     char* result = malloc(1024);
     size_t read_bytes = 0;
     size_t total_bytes = 0;
@@ -751,6 +783,8 @@ int exec(lua_State* state) {
       result = realloc(result, total_bytes + 1024);
     }
     int close_ret = pclose(file);
+    // A result is sent from here on, so the release path must not run too.
+    alarm(0);
     int exit_code = WEXITSTATUS(close_ret);
 
     size_t message_size = total_bytes + 2*sizeof(int) + sizeof(char);
@@ -760,10 +794,10 @@ int exec(lua_State* state) {
     memcpy(message + 1 + sizeof(int), &exit_code, sizeof(int));
     memcpy(message + 1 + 2*sizeof(int), result, total_bytes);
 
-    mach_send_message(mach_get_bs_port(g_bootstrap_name),
+    mach_send_message(g_exec_reply_port,
                       message,
                       message_size,
-                      false                              );
+                      false             );
 
     free(result);
     exit(close_ret);
