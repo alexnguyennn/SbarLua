@@ -5,6 +5,7 @@
 #include <lualib.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdint.h>
+#include <sys/wait.h>
 
 #include "stack.h"
 
@@ -815,7 +816,12 @@ static int os_execute_sig(lua_State *L) {
   errno = 0;
   signal(SIGCHLD, SIG_DFL);
   stat = system(cmd);
+  // Children (e.g. sbar.exec forks) that exited while SIGCHLD was SIG_DFL are
+  // zombies that SIG_IGN will not reap; a lingering zombie makes every later
+  // pclose() (io.popen) block in wait4 forever, deadlocking the event loop.
+  // Re-ignore first (no new zombies), then reap the ones left from the window.
   signal(SIGCHLD, SIG_IGN);
+  while (waitpid(-1, NULL, WNOHANG) > 0);
   if (cmd != NULL)
     return luaL_execresult(L, stat);
   else {
